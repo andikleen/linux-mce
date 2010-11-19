@@ -531,8 +531,18 @@ static void mce_read_aux(struct mce *m, int i)
 {
 	if (m->status & MCI_STATUS_MISCV)
 		m->misc = mce_rdmsrl(MSR_IA32_MCx_MISC(i));
-	if (m->status & MCI_STATUS_ADDRV)
+	if (m->status & MCI_STATUS_ADDRV) {
 		m->addr = mce_rdmsrl(MSR_IA32_MCx_ADDR(i));
+
+		/*
+		 * Mask the reported address by the reported granuality.
+		 */
+		if (mce_ser && (m->status & MCI_STATUS_MISCV)) {
+			u8 shift = m->misc & 0x1f;
+			m->addr >>= shift;
+			m->addr <<= shift;
+		}
+	}
 }
 
 DEFINE_PER_CPU(unsigned, mce_poll_count);
