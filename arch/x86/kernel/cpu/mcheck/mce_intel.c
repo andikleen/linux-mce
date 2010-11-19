@@ -133,8 +133,14 @@ static void cmci_discover(int banks, int boot)
 
 		rdmsrl(MSR_IA32_MCx_CTL2(i), val);
 
-		/* Already owned by someone else? */
-		if (val & MCI_CTL2_CMCI_EN) {
+ 		/*
+ 		 * Already owned by someone else?
+ 		 *
+ 		 * When this is the first CPU in a socket to come online always
+		 * take ownership.
+ 		 */
+		if ((val & MCI_CTL2_CMCI_EN) &&
+		    cpumask_weight(cpu_core_mask(smp_processor_id())) > 1) {
 			if (test_and_clear_bit(i, owned) && !boot) {
 				char *msg = "SHD";
 				if (check_socket_shared(i))
