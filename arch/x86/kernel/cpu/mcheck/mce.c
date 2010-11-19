@@ -1154,10 +1154,9 @@ static DEFINE_PER_CPU(struct timer_list, mce_timer);
 
 static void mce_start_timer(unsigned long data)
 {
-	struct timer_list *t = &per_cpu(mce_timer, data);
+	int cpu = smp_processor_id();
+	struct timer_list *t = &per_cpu(mce_timer, cpu);
 	int *n;
-
-	WARN_ON(smp_processor_id() != data);
 
 	if (mce_available(&current_cpu_data)) {
 		machine_check_poll(MCP_TIMESTAMP,
@@ -1404,7 +1403,7 @@ static void __mcheck_cpu_init_timer(void)
 	struct timer_list *t = &__get_cpu_var(mce_timer);
 	int *n = &__get_cpu_var(mce_next_interval);
 
-	setup_timer(t, mce_start_timer, smp_processor_id());
+	setup_timer(t, mce_start_timer, 0);
 
 	if (mce_ignore_ce)
 		return;
@@ -2016,7 +2015,33 @@ static __cpuinit void mce_remove_device(unsigned int cpu)
 	cpumask_clear_cpu(cpu, mce_dev_initialized);
 }
 
-/* Make sure there are no machine checks on offlined CPUs. */
+/*
+ * Decide if a bank should be disabled on offlining or not.
+ * Offlining is slightly tricky due to shared banks. When one sibling
+ * is offlined we should still keep them enabled for any
+ * sharer that is still online.
+ * There's no standard way to detect this, so use a couple
+ * of heuristics.
+ */
+static int bank_clear(int bank)
+{
+	int cpu = smp_processor_id();
+
+	/* Thread sibling alive? */
+	if (!cpumask_equal(topology_thread_cpumask(cpu), cpumask_of(cpu)))
+		return 0;
+
+	/* Socket sibling alive and this is a socket shared bank? */
+	if (mce_banks[bank].socket_shared &&
+		!cpumask_equal(topology_core_cpumask(cpu), cpumask_of(cpu)))
+		return 0;
+
+	return 1;
+}
+
+/*
+ * Make sure there are no machine checks on offlined CPUs.
+ */
 static void __cpuinit mce_disable_cpu(void *h)
 {
 	unsigned long action = *(unsigned long *)h;
@@ -2030,7 +2055,7 @@ static void __cpuinit mce_disable_cpu(void *h)
 	for (i = 0; i < banks; i++) {
 		struct mce_bank *b = &mce_banks[i];
 
-		if (b->init)
+		if (b->init && bank_clear(i))
 			wrmsrl(MSR_IA32_MCx_CTL(i), 0);
 	}
 }
