@@ -1463,13 +1463,15 @@ void __cpuinit mcheck_cpu_init(struct cpuinfo_x86 *c)
 		return;
 	}
 
+	INIT_WORK(&__get_cpu_var(mce_work), mce_process_work);
 	machine_check_vector = do_machine_check;
+
+	/* Make sure the global state is in memory before setting up more */
+	mb();
 
 	__mcheck_cpu_init_generic();
 	__mcheck_cpu_init_vendor(c);
 	__mcheck_cpu_init_timer();
-	INIT_WORK(&__get_cpu_var(mce_work), mce_process_work);
-
 }
 
 /*
