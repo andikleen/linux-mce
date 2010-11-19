@@ -11,6 +11,7 @@
 #include <linux/crash_dump.h>
 
 #include <asm/uaccess.h>
+#include <asm/mce.h>
 
 static void *kdump_buf_page;
 
@@ -64,7 +65,9 @@ ssize_t copy_oldmem_page(unsigned long pfn, char *buf,
 	vaddr = kmap_atomic_pfn(pfn);
 
 	if (!userbuf) {
+		mce_disable_error_reporting();
 		memcpy(buf, (vaddr + offset), csize);
+		mce_reenable_error_reporting();
 		kunmap_atomic(vaddr, KM_PTE0);
 	} else {
 		if (!kdump_buf_page) {
@@ -73,7 +76,9 @@ ssize_t copy_oldmem_page(unsigned long pfn, char *buf,
 			kunmap_atomic(vaddr, KM_PTE0);
 			return -EFAULT;
 		}
+		mce_disable_error_reporting();
 		copy_page(kdump_buf_page, vaddr);
+		mce_reenable_error_reporting();
 		kunmap_atomic(vaddr, KM_PTE0);
 		if (copy_to_user(buf, (kdump_buf_page + offset), csize))
 			return -EFAULT;
