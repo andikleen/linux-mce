@@ -1155,8 +1155,9 @@ static DEFINE_PER_CPU(struct timer_list, mce_timer);
 static void mce_start_timer(unsigned long data)
 {
 	int cpu = smp_processor_id();
-	struct timer_list *t = &per_cpu(mce_timer, cpu);
+	struct timer_list *t;
 	int *n;
+	int i;
 
 	if (mce_available(&current_cpu_data)) {
 		machine_check_poll(MCP_TIMESTAMP,
@@ -1173,8 +1174,18 @@ static void mce_start_timer(unsigned long data)
 	else
 		*n = min(*n*2, (int)round_jiffies_relative(check_interval*HZ));
 
+	/*
+	 * Cycle timer through the available thread siblings.
+	 * This way we use the CPU time evenly in the no error case.
+	 */
+	i = cpumask_next(cpu, topology_thread_cpumask(cpu));
+	if (i >= nr_cpu_ids)
+		i = cpumask_first(topology_thread_cpumask(cpu));
+	t = &per_cpu(mce_timer, i);
+	per_cpu(mce_next_interval, i) = *n;
+
 	t->expires = jiffies + *n;
-	add_timer_on(t, smp_processor_id());
+	add_timer_on(t, i);
 }
 
 static void mce_do_trigger(struct work_struct *work)
@@ -1402,11 +1413,19 @@ static void __mcheck_cpu_init_timer(void)
 {
 	struct timer_list *t = &__get_cpu_var(mce_timer);
 	int *n = &__get_cpu_var(mce_next_interval);
+  	int cpu = smp_processor_id();
+  	int i;
 
 	setup_timer(t, mce_start_timer, 0);
 
 	if (mce_ignore_ce)
 		return;
+
+  	if (cpumask_first(topology_thread_cpumask(cpu)) < cpu)
+  		return;
+  	for_each_cpu (i, topology_thread_cpumask(cpu))
+  		del_timer_sync(&per_cpu(mce_timer, i));
+  	del_timer_sync(&per_cpu(mce_timer, cpu));
 
 	*n = check_interval * HZ;
 	if (!*n)
@@ -1776,14 +1795,15 @@ static void mce_cpu_restart(void *data)
 	del_timer_sync(&__get_cpu_var(mce_timer));
 	if (!mce_available(&current_cpu_data))
 		return;
-	__mcheck_cpu_init_generic();
+	if (data)
+		__mcheck_cpu_init_generic();
 	__mcheck_cpu_init_timer();
 }
 
 /* Reinit MCEs after user configuration changes */
 static void mce_restart(void)
 {
-	on_each_cpu(mce_cpu_restart, NULL, 1);
+	on_each_cpu(mce_cpu_restart, (void *)1L, 1);
 }
 
 /* Toggle features for corrected errors */
@@ -2094,6 +2114,10 @@ mce_cpu_callback(struct notifier_block *nfb, unsigned long action, void *hcpu)
 		break;
 	case CPU_DEAD:
 	case CPU_DEAD_FROZEN:
+		/* Restart poll timer on other siblings */
+		smp_call_function_many(topology_thread_cpumask(cpu),
+					(void (*)(void *))mce_cpu_restart,
+					NULL, 1);
 		if (threshold_cpu_callback)
 			threshold_cpu_callback(action, cpu);
 		mce_remove_device(cpu);
