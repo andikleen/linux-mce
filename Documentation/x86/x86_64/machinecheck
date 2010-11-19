@@ -45,6 +45,9 @@ check_interval
 	check errors (but some corrected errors might be still reported
 	in other ways)
 
+check_min_interval
+	Minimum interval to poll for machine checks in ms.
+
 tolerant
 	Tolerance level. When a machine check exception occurs for a non
 	corrected machine check the kernel can take different actions.

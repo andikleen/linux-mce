@@ -1148,6 +1148,7 @@ void mce_log_therm_throt_event(__u64 status)
  * errors, poll 2x slower (up to check_interval seconds).
  */
 static int check_interval = 5 * 60; /* 5 minutes */
+static int check_min_interval = 10;  /* in ms */
 
 static DEFINE_PER_CPU(int, mce_next_interval); /* in jiffies */
 static DEFINE_PER_CPU(struct timer_list, mce_timer);
@@ -1170,7 +1171,7 @@ static void mce_start_timer(unsigned long data)
 	 */
 	n = &__get_cpu_var(mce_next_interval);
 	if (mce_notify_irq())
-		*n = max(*n/2, HZ/100);
+		*n = max_t(int, *n/2, msecs_to_jiffies(check_min_interval));
 	else
 		*n = min(*n*2, (int)round_jiffies_relative(check_interval*HZ));
 
@@ -1952,6 +1953,12 @@ static struct sysdev_ext_attribute attr_check_interval = {
 	&check_interval
 };
 
+static struct sysdev_ext_attribute attr_check_min_interval = {
+	_SYSDEV_ATTR(check_min_interval, 0644, sysdev_show_int,
+		     store_int_with_restart),
+	&check_min_interval
+};
+
 static struct sysdev_ext_attribute attr_ignore_ce = {
 	_SYSDEV_ATTR(ignore_ce, 0644, sysdev_show_int, set_ignore_ce),
 	&mce_ignore_ce
@@ -1970,6 +1977,7 @@ static struct sysdev_attribute *mce_attrs[] = {
 	&attr_dont_log_ce.attr,
 	&attr_ignore_ce.attr,
 	&attr_cmci_disabled.attr,
+	&attr_check_min_interval.attr,
 	NULL
 };
 
