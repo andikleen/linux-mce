@@ -14,6 +14,7 @@
 #include <asm/processor.h>
 #include <asm/msr.h>
 #include <asm/mce.h>
+#include "mce-internal.h"
 
 /*
  * Support for Intel Correct Machine Check Interrupts. This allows
@@ -86,6 +87,31 @@ static void print_update(char *type, int *hdr, int num)
 }
 
 /*
+ * Simple heuristic to discover socket shared banks.
+ * This heuristic only works for CMCI banks.
+ */
+static int check_socket_shared(int i)
+{
+	int cpu = smp_processor_id();
+
+	/*
+	 * First sibling to come alive?
+ 	 * Relies on MCE init running before sibling mask setup.
+	 */
+	if (!cpumask_empty(topology_thread_cpumask(cpu)))
+		return 0;
+
+	/*
+ 	 * The bank was already owned, but we're the first sibling
+ 	 * on the current core.
+	 * This means it's very likely socket shared. Mark it as such.
+	 */
+	mce_banks[i].socket_shared = 1;
+
+	return 1;
+}
+
+/*
  * Enable CMCI (Corrected Machine Check Interrupt) for available MCE banks
  * on this CPU. Use the algorithm recommended in the SDM to discover shared
  * banks.
@@ -110,7 +136,10 @@ static void cmci_discover(int banks, int boot)
 		/* Already owned by someone else? */
 		if (val & MCI_CTL2_CMCI_EN) {
 			if (test_and_clear_bit(i, owned) && !boot) {
-				print_update("SHD", &hdr, i);
+				char *msg = "SHD";
+				if (check_socket_shared(i))
+					msg = "SOCK-SHD";
+				print_update(msg, &hdr, i);
 				changed = 1;
 			}
 			__clear_bit(i, __get_cpu_var(mce_poll_banks));
