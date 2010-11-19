@@ -477,7 +477,7 @@ __kfifo_uint_must_check_helper( \
 		__val = (typeof(__tmp->ptr))NULL; \
 	if (__recsize) \
 		__ret = __kfifo_out_peek_r(__kfifo, __val, sizeof(*__val), \
-			__recsize); \
+				   __recsize, 0);			\
 	else { \
 		__ret = !kfifo_is_empty(__tmp); \
 		if (__ret) { \
@@ -570,8 +570,8 @@ __kfifo_uint_must_check_helper( \
 		__buf = __dummy; \
 	} \
 	(__recsize) ?\
-	__kfifo_out_r(__kfifo, __buf, __n, __recsize) : \
-	__kfifo_out(__kfifo, __buf, __n); \
+	__kfifo_out_r(__kfifo, __buf, __n, __recsize) :	\
+	__kfifo_out(__kfifo, __buf, __n);		\
 }) \
 )
 
@@ -762,6 +762,7 @@ __kfifo_uint_must_check_helper( \
  * @fifo: address of the fifo to be used
  * @buf: pointer to the storage buffer
  * @n: max. number of elements to get
+ * @offset: element offset inside the buffer to get
  *
  * This macro get the data from the fifo and return the numbers of elements
  * copied. The data is not removed from the fifo.
@@ -769,7 +770,7 @@ __kfifo_uint_must_check_helper( \
  * Note that with only one concurrent reader and one concurrent
  * writer, you don't need extra locking to use these macro.
  */
-#define	kfifo_out_peek(fifo, buf, n) \
+#define	kfifo_out_peek(fifo, buf, n, offset) \
 __kfifo_uint_must_check_helper( \
 ({ \
 	typeof((fifo) + 1) __tmp = (fifo); \
@@ -782,8 +783,8 @@ __kfifo_uint_must_check_helper( \
 		__buf = __dummy; \
 	} \
 	(__recsize) ? \
-	__kfifo_out_peek_r(__kfifo, __buf, __n, __recsize) : \
-	__kfifo_out_peek(__kfifo, __buf, __n); \
+	__kfifo_out_peek_r(__kfifo, __buf, __n, __recsize, (offset)) : \
+	__kfifo_out_peek(__kfifo, __buf, __n, (offset));       \
 }) \
 )
 
@@ -814,13 +815,13 @@ extern unsigned int __kfifo_dma_out_prepare(struct __kfifo *fifo,
 	struct scatterlist *sgl, int nents, unsigned int len);
 
 extern unsigned int __kfifo_out_peek(struct __kfifo *fifo,
-	void *buf, unsigned int len);
+       void *buf, unsigned int len, unsigned offset);
 
 extern unsigned int __kfifo_in_r(struct __kfifo *fifo,
 	const void *buf, unsigned int len, size_t recsize);
 
 extern unsigned int __kfifo_out_r(struct __kfifo *fifo,
-	void *buf, unsigned int len, size_t recsize);
+       void *buf, unsigned int len, size_t recsize);
 
 extern int __kfifo_from_user_r(struct __kfifo *fifo,
 	const void __user *from, unsigned long len, unsigned int *copied,
@@ -845,7 +846,7 @@ extern unsigned int __kfifo_len_r(struct __kfifo *fifo, size_t recsize);
 extern void __kfifo_skip_r(struct __kfifo *fifo, size_t recsize);
 
 extern unsigned int __kfifo_out_peek_r(struct __kfifo *fifo,
-	void *buf, unsigned int len, size_t recsize);
+	       void *buf, unsigned int len, size_t recsize, unsigned offset);
 
 extern unsigned int __kfifo_max_r(unsigned int len, size_t recsize);
 

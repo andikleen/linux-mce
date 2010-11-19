@@ -141,7 +141,7 @@ unsigned int __kfifo_in(struct __kfifo *fifo,
 EXPORT_SYMBOL(__kfifo_in);
 
 static void kfifo_copy_out(struct __kfifo *fifo, void *dst,
-		unsigned int len, unsigned int off)
+	   unsigned int len, unsigned int off)
 {
 	unsigned int size = fifo->mask + 1;
 	unsigned int esize = fifo->esize;
@@ -165,7 +165,7 @@ static void kfifo_copy_out(struct __kfifo *fifo, void *dst,
 }
 
 unsigned int __kfifo_out_peek(struct __kfifo *fifo,
-		void *buf, unsigned int len)
+	      void *buf, unsigned int len, unsigned offset)
 {
 	unsigned int l;
 
@@ -173,7 +173,7 @@ unsigned int __kfifo_out_peek(struct __kfifo *fifo,
 	if (len > l)
 		len = l;
 
-	kfifo_copy_out(fifo, buf, len, fifo->out);
+	kfifo_copy_out(fifo, buf, len, fifo->out + offset);
 	return len;
 }
 EXPORT_SYMBOL(__kfifo_out_peek);
@@ -181,7 +181,7 @@ EXPORT_SYMBOL(__kfifo_out_peek);
 unsigned int __kfifo_out(struct __kfifo *fifo,
 		void *buf, unsigned int len)
 {
-	len = __kfifo_out_peek(fifo, buf, len);
+	len = __kfifo_out_peek(fifo, buf, len, 0);
 	fifo->out += len;
 	return len;
 }
@@ -464,26 +464,29 @@ unsigned int __kfifo_in_r(struct __kfifo *fifo, const void *buf,
 EXPORT_SYMBOL(__kfifo_in_r);
 
 static unsigned int kfifo_out_copy_r(struct __kfifo *fifo,
-	void *buf, unsigned int len, size_t recsize, unsigned int *n)
+     void *buf, unsigned int len, size_t recsize, unsigned int *n,
+     unsigned offset)
 {
+	offset *= recsize;
+
 	*n = __kfifo_peek_n(fifo, recsize);
 
-	if (len > *n)
+	if (len > *n + offset)
 		len = *n;
 
-	kfifo_copy_out(fifo, buf, len, fifo->out + recsize);
+	kfifo_copy_out(fifo, buf, len, fifo->out + recsize + offset);
 	return len;
 }
 
 unsigned int __kfifo_out_peek_r(struct __kfifo *fifo, void *buf,
-		unsigned int len, size_t recsize)
+		unsigned int len, size_t recsize, unsigned offset)
 {
 	unsigned int n;
 
 	if (fifo->in == fifo->out)
 		return 0;
 
-	return kfifo_out_copy_r(fifo, buf, len, recsize, &n);
+	return kfifo_out_copy_r(fifo, buf, len, recsize, &n, offset);
 }
 EXPORT_SYMBOL(__kfifo_out_peek_r);
 
@@ -495,7 +498,7 @@ unsigned int __kfifo_out_r(struct __kfifo *fifo, void *buf,
 	if (fifo->in == fifo->out)
 		return 0;
 
-	len = kfifo_out_copy_r(fifo, buf, len, recsize, &n);
+	len = kfifo_out_copy_r(fifo, buf, len, recsize, &n, 0);
 	fifo->out += n + recsize;
 	return len;
 }
