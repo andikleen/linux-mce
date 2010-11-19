@@ -721,8 +721,8 @@ out:
  * state and won't corrupt anything by itself. It's ok to let the others
  * continue for a bit first.
  *
- * All the spin loops have timeouts; when a timeout happens a CPU
- * typically elects itself to be Monarch.
+ * All the spin loops have timeouts in case a CPU dies; when a timeout happens
+ * the machine check is processed on the local CPU only.
  */
 static void mce_reign(void)
 {
