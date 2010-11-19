@@ -1168,12 +1168,14 @@ static void mce_start_timer(unsigned long data)
 	/*
 	 * Alert userspace if needed.  If we logged an MCE, reduce the
 	 * polling interval, otherwise increase the polling interval.
+ 	 *
+ 	 * Only round timers when there are no errors.
 	 */
 	n = &__get_cpu_var(mce_next_interval);
 	if (mce_notify_irq())
 		*n = max_t(int, *n/2, msecs_to_jiffies(check_min_interval));
-	else
-		*n = min(*n*2, (int)round_jiffies_relative(check_interval*HZ));
+	else if ((*n *= 2) >= check_interval * HZ)
+		*n = round_jiffies_relative(check_interval * HZ);
 
 	/*
 	 * Cycle timer through the available thread siblings.
