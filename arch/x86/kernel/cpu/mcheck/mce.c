@@ -1106,10 +1106,19 @@ void __attribute__((weak)) memory_failure(unsigned long pfn, int vector)
  */
 void mce_notify_process(void)
 {
-	unsigned long pfn;
+	int i, k;
+	unsigned long pfns[MCE_RING_SIZE];
 	mce_notify_irq();
-	while (mce_ring_get(&pfn))
-		memory_failure(pfn, MCE_VECTOR);
+
+	i = 0;
+	get_cpu();
+	for (i = 0; i < MCE_RING_SIZE; i++) {
+		if (!mce_ring_get(&pfns[i++]))
+			break;
+	}
+	put_cpu();
+	for (k = 0; k < i; k++)
+		memory_failure(pfns[k], MCE_VECTOR);
 }
 
 static void mce_process_work(struct work_struct *dummy)
