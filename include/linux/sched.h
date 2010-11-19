@@ -1512,6 +1512,9 @@ struct task_struct {
 		unsigned long memsw_bytes; /* uncharged mem+swap usage */
 	} memcg_batch;
 #endif
+#ifdef CONFIG_X86_MCE
+	unsigned long mce_error_pfn;
+#endif
 };
 
 /* Future-safe accessor for struct task_struct's cpus_allowed. */

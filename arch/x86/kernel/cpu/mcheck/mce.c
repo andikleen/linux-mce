@@ -922,6 +922,131 @@ static void mce_clear_state(unsigned long *toclear)
 	}
 }
 
+/* Stub when hwpoison is not compiled in */
+int __attribute__((weak)) __memory_failure(unsigned long pfn, int vector,
+					   int precount)
+{
+	return -1;
+}
+
+/*
+ * Uncorrected error for current process.
+ */
+static void mce_action_required(struct mce *m, char *msg, struct pt_regs *regs)
+{
+	if (!mce_usable_address(m))
+		mce_panic("No address for Action-Required Machine Check",
+			  m, msg);
+	if (!(m->mcgstatus & MCG_STATUS_EIPV))
+		mce_panic("No EIPV for Action-Required Machine Check",
+			  m, msg);
+
+	WARN_ON(current->mce_error_pfn != -1L);
+	current->mce_error_pfn = m->addr >> PAGE_SHIFT;
+	set_thread_flag(TIF_MCE_NOTIFY);
+}
+
+#undef pr_fmt
+#define pr_fmt(x) "MCE: %s:%d " x "\n", current->comm, current->pid
+#define PADDR(x) ((u64)(x) << PAGE_SHIFT)
+
+/*
+ * No successfull recovery. Make sure at least that there's
+ * a SIGBUS.
+ */
+static void ar_fallback(struct task_struct *me, unsigned long pfn)
+{
+	if (signal_pending(me) && sigismember(&me->pending.signal, SIGBUS))
+		return;
+
+	/*
+	 * For some reason hwpoison wasn't able to send a proper
+	 * SIGBUS.  Send a fallback signal. Unfortunately we don't
+	 * know the virtual address here, so can't tell the program
+	 * details.
+	 */
+	force_sig(SIGBUS, me);
+	pr_err("Killed due to action-required memory corruption");
+}
+
+/*
+ * Handle action-required on the process stack.  hwpoison does the
+ * bulk of the work and with some luck might even be able to fix the
+ * problem.
+ *
+ * Logic changes here should be reflected in kernel_ar_recoverable().
+ */
+static void handle_action_required(struct pt_regs *regs)
+{
+	struct task_struct *me = current;
+	unsigned long pfn = me->mce_error_pfn;
+	unsigned long pstack;
+
+	me->mce_error_pfn = -1L;
+
+	/*
+	 * User-mode:
+	 *
+	 * Guarantee of no kernel locks hold. Do full VM level
+	 * recovery. This will result either in a signal
+	 * or transparent recovery.
+	 */
+	if (user_mode(regs)) {
+		pr_err("Uncorrected hardware memory error in user-access at %llx",
+		       PADDR(pfn));
+		if (__memory_failure(pfn, MCE_VECTOR, 0) < 0) {
+			pr_err("Memory error not recovered");
+			ar_fallback(me, pfn);
+		} else
+			pr_err("Memory error recovered");
+		return;
+	}
+
+	/*
+	 * Kernel-mode:
+	 *
+	 * Recover from faults with exception tables.
+	 *
+	 * We can't use VM recovery here, because there's no
+	 * guarantee what locks are already hold in the code
+	 * interrupted and we don't have a virtual address.
+	 * 
+	 * Simply EFAULT this case.
+	 */
+	pr_err("Hardware memory error in kernel context at %llx",
+	       PADDR(pfn));
+	if (fixup_exception(regs)) {
+		pr_err("Injecting EFAULT for kernel memory error");
+		return;
+	}
+
+	/*
+	 * Corruption in kernel code that is not protected by
+	 * a exception table.
+	 *
+	 * When the tolerance level is high enough treat like
+	 * an oops. Note this is not fully safe and might deadlock
+	 * when the current code path hold any locks taken by do_exit.
+	 * 
+	 * Do various sanity checks to avoid looping etc.
+	 */
+	pstack = (unsigned long)task_thread_info(current);
+	if (tolerant >= 2 && 
+	    !(current->flags & PF_EXITING) &&
+	    current->pid && 
+	    !in_interrupt() &&
+	    regs->sp >= pstack && regs->sp <= pstack + THREAD_SIZE) {
+		pr_err("Unsafe killing of current process in kernel context");
+		do_exit(SIGBUS);
+	}
+
+	panic("Memory error machine check in kernel context at %llx",
+	      PADDR(pfn));
+}
+
+#undef pr_fmt
+#define pr_fmt(x) x
+
 /*
  * The actual machine check handler. This only handles real
  * exceptions when something got corrupted coming in through int 18.
@@ -1034,12 +1159,6 @@ void do_machine_check(struct pt_regs *regs, long error_code)
 			continue;
 		}
 
-		/*
-		 * Kill on action required.
-		 */
-		if (severity == MCE_AR_SEVERITY)
-			kill_it = 1;
-
 		mce_read_aux(&m, i);
 
 		/*
@@ -1081,6 +1200,15 @@ void do_machine_check(struct pt_regs *regs, long error_code)
 		mce_panic("Fatal machine check on current CPU", final, msg);
 
 	/*
+	 * Do recovery in current process if needed. This has to be delayed
+ 	 * until we're back on the process stack.
+	 */
+	if (worst == MCE_AR_SEVERITY) {
+		mce_action_required(final, msg, regs);
+		kill_it = 0;
+	}
+
+	/*
 	 * If the error seems to be unrecoverable, something should be
 	 * done.  Try to kill as little as possible.  If we can kill just
 	 * one task, do that.  If the user has set the tolerance very
@@ -1116,8 +1244,6 @@ void __attribute__((weak)) memory_failure(unsigned long pfn, int vector)
  * per CPU.
  * Note we don't disable preemption, so this code might run on the wrong
  * CPU. In this case the event is picked up by the scheduled work queue.
- * This is merely a fast path to expedite processing in some common
- * cases.
  */
 void mce_notify_process(struct pt_regs *regs)
 {
@@ -1125,6 +1251,9 @@ void mce_notify_process(struct pt_regs *regs)
 	mce_notify_irq();
 	while (mce_ring_get(&pfn))
 		memory_failure(pfn, MCE_VECTOR);
+
+	if (regs && current->mce_error_pfn != -1L)
+		handle_action_required(regs);
 }
 
 static void mce_process_work(struct work_struct *dummy)

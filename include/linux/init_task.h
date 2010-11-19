@@ -110,6 +110,12 @@ extern struct cred init_cred;
 # define INIT_PERF_EVENTS(tsk)
 #endif
 
+#ifdef CONFIG_X86_MCE
+#define INIT_MCE_ERROR_PFN .mce_error_pfn = -1L,
+#else
+#define INIT_MCE_ERROR_PFN
+#endif
+
 /*
  *  INIT_TASK is used to set up the first task table, touch at
  * your own risk!. Base=0, limit=0x1fffff (=2MB)
@@ -178,6 +184,7 @@ extern struct cred init_cred;
 	INIT_FTRACE_GRAPH						\
 	INIT_TRACE_RECURSION						\
 	INIT_TASK_RCU_PREEMPT(tsk)					\
+	INIT_MCE_ERROR_PFN						\
 }
 
 

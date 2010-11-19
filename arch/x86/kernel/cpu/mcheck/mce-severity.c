@@ -13,6 +13,7 @@
 #include <linux/seq_file.h>
 #include <linux/init.h>
 #include <linux/debugfs.h>
+#include <linux/module.h>
 #include <asm/mce.h>
 
 #include "mce-internal.h"
@@ -67,7 +68,7 @@ static struct severity {
 	MCGMASK(MCG_STATUS_RIPV|MCG_STATUS_EIPV, 0, PANIC,
 		"Neither restart nor error IP"),
 	MCGMASK(MCG_STATUS_RIPV, 0, PANIC, "In kernel and no restart IP",
-		KERNEL),
+		KERNEL, NOSER),
 	BITCLR(MCI_STATUS_UC, KEEP, "Corrected error", NOSER),
 	MASK(MCI_STATUS_OVER|MCI_STATUS_UC|MCI_STATUS_EN, MCI_STATUS_UC, SOME,
 	     "Spurious not enabled", SER),
@@ -79,7 +80,6 @@ static struct severity {
 	     "Illegal combination (UCNA with AR=1)", SER),
 	MASK(MCI_STATUS_S, 0, KEEP, "Non signalled machine check", SER),
 
-	/* AR add known MCACODs here */
 	MASK(MCI_STATUS_OVER|MCI_UC_SAR, MCI_STATUS_OVER|MCI_UC_SAR, PANIC,
 	     "Action required with lost events", SER),
 	MASK(MCI_STATUS_OVER|MCI_UC_SAR|MCACOD, MCI_UC_SAR, PANIC,
@@ -90,6 +90,12 @@ static struct severity {
 	     "Action optional: memory scrubbing error", SER),
 	MASK(MCI_UC_SAR|MCI_STATUS_OVER|MCACOD, MCI_UC_S|0x17a, AO,
 	     "Action optional: last level cache writeback error", SER),
+
+	/* known AR MCACODs: */
+	MASK(MCI_UC_SAR|MCI_STATUS_OVER|0xffff, MCI_UC_SAR|0x134, AR,
+	     "Action required: data load error", SER),
+	MASK(MCI_UC_SAR|MCI_STATUS_OVER|0xffff, MCI_UC_SAR|0x150, AR,
+	     "Action required: instruction fetch error", SER),
 
 	MASK(MCI_STATUS_OVER|MCI_UC_SAR, MCI_UC_S, SOME,
 	     "Action optional unknown MCACOD", SER),
@@ -112,6 +118,17 @@ static int error_context(struct mce *m)
 	return IN_KERNEL;
 }
 
+static int kernel_ar_recoverable(struct mce *m, int tolerant)
+{
+	if (tolerant >= 2)
+		return MCE_AR_SEVERITY;
+	if (!(m->mcgstatus & MCG_STATUS_EIPV) || !m->ip)
+		return MCE_PANIC_SEVERITY;
+	if (search_exception_tables(m->ip))
+		return MCE_AR_SEVERITY;
+	return MCE_PANIC_SEVERITY;
+}
+
 int mce_severity(struct mce *a, int tolerant, char **msg)
 {
 	enum context ctx = error_context(a);
@@ -131,9 +148,12 @@ int mce_severity(struct mce *a, int tolerant, char **msg)
 		if (msg)
 			*msg = s->msg;
 		s->covered = 1;
-		if (s->sev >= MCE_UC_SEVERITY && ctx == IN_KERNEL) {
-			if (panic_on_oops || tolerant < 1)
+		if (ctx == IN_KERNEL) {
+			if (s->sev >= MCE_UC_SEVERITY &&
+				(panic_on_oops || tolerant < 1))
 				return MCE_PANIC_SEVERITY;
+			if (s->sev == MCE_AR_SEVERITY)
+				return kernel_ar_recoverable(a, tolerant);
 		}
 		return s->sev;
 	}
