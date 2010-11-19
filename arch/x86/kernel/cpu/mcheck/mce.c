@@ -1119,7 +1119,7 @@ void __attribute__((weak)) memory_failure(unsigned long pfn, int vector)
  * This is merely a fast path to expedite processing in some common
  * cases.
  */
-void mce_notify_process(void)
+void mce_notify_process(struct pt_regs *regs)
 {
 	unsigned long pfn;
 	mce_notify_irq();
@@ -1129,7 +1129,7 @@ void mce_notify_process(void)
 
 static void mce_process_work(struct work_struct *dummy)
 {
-	mce_notify_process();
+	mce_notify_process(NULL);
 }
 
 #ifdef CONFIG_X86_MCE_INTEL
