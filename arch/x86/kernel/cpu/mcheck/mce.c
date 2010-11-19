@@ -460,6 +460,14 @@ static inline void mce_get_rip(struct mce *m, struct pt_regs *regs)
 	if (regs && (m->mcgstatus & (MCG_STATUS_RIPV|MCG_STATUS_EIPV))) {
 		m->ip = regs->ip;
 		m->cs = regs->cs;
+
+		/*
+		 * When in VM86 mode make the cs look like ring 3
+	 	 * always. This is a lie, but it's better than passing
+		 * the additional vm86 bit around everywhere.
+		 */
+		if (v8086_mode(regs))
+			m->cs |= 3;
 	} else {
 		m->ip = 0;
 		m->cs = 0;
