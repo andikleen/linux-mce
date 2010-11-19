@@ -26,6 +26,7 @@
 #include <linux/sched.h>
 #include <linux/sysfs.h>
 #include <linux/types.h>
+#include <linux/kfifo.h>
 #include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/kmod.h>
@@ -384,54 +385,30 @@ static void mce_wrmsrl(u32 msr, u64 v)
  * process context work function. This is vastly simplified because there's
  * only a single reader and a single writer.
  */
-#define MCE_RING_SIZE 16	/* we use one entry less */
-
-struct mce_ring {
-	unsigned short start;
-	unsigned short end;
-	unsigned long ring[MCE_RING_SIZE];
-};
-static DEFINE_PER_CPU(struct mce_ring, mce_ring);
+#define MCE_RING_SIZE 16
+typedef DECLARE_KFIFO(pfn_kfifo, unsigned long, MCE_RING_SIZE);
+static DEFINE_PER_CPU(pfn_kfifo, mce_pfn_fifo);
 
 /* Runs with CPU affinity in workqueue */
 static int mce_ring_empty(void)
 {
-	struct mce_ring *r = &__get_cpu_var(mce_ring);
-
-	return r->start == r->end;
+	return kfifo_len(&__get_cpu_var(mce_pfn_fifo)) == 0;
 }
 
 static int mce_ring_get(unsigned long *pfn)
 {
-	struct mce_ring *r;
-	int ret = 0;
+	int ret;
 
-	*pfn = 0;
 	get_cpu();
-	r = &__get_cpu_var(mce_ring);
-	if (r->start == r->end)
-		goto out;
-	*pfn = r->ring[r->start];
-	r->start = (r->start + 1) % MCE_RING_SIZE;
-	ret = 1;
-out:
+	ret = kfifo_out(&__get_cpu_var(mce_pfn_fifo), pfn, 1);
 	put_cpu();
 	return ret;
 }
 
 /* Always runs in MCE context with preempt off */
-static int mce_ring_add(unsigned long pfn)
+static void mce_ring_add(unsigned long pfn)
 {
-	struct mce_ring *r = &__get_cpu_var(mce_ring);
-	unsigned next;
-
-	next = (r->end + 1) % MCE_RING_SIZE;
-	if (next == r->start)
-		return -1;
-	r->ring[r->end] = pfn;
-	wmb();
-	r->end = next;
-	return 0;
+      	kfifo_in(&__get_cpu_var(mce_pfn_fifo), &pfn, 1);
 }
 
 int mce_available(struct cpuinfo_x86 *c)
@@ -1446,6 +1423,7 @@ void __cpuinit mcheck_cpu_init(struct cpuinfo_x86 *c)
 		return;
 	}
 
+	INIT_KFIFO(__get_cpu_var(mce_pfn_fifo));
 	machine_check_vector = do_machine_check;
 
 	__mcheck_cpu_init_generic();
