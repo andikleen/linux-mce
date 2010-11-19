@@ -341,7 +341,8 @@ retry:
 		printk("DEBUG_BLOCK_EXT_DEVT is enabled, you need to specify "
 		       "explicit textual name for \"root=\" boot option.\n");
 #endif
-		panic("VFS: Unable to mount root fs on %s", b);
+		xpanic(PANIC_NO_BACKTRACE, 0, 
+			"VFS: Unable to mount root fs on %s", b);
 	}
 
 	printk("List of all partitions:\n");
@@ -353,7 +354,7 @@ retry:
 #ifdef CONFIG_BLOCK
 	__bdevname(ROOT_DEV, b);
 #endif
-	panic("VFS: Unable to mount root fs on %s", b);
+	xpanic(PANIC_NO_BACKTRACE, 0, "VFS: Unable to mount root fs on %s", b);
 out:
 	putname(fs_names);
 }
