@@ -1,11 +1,28 @@
 /*
- * Machine check handler.
+ * Machine check handler. This handles hardware errors detected by
+ * the CPU.
  *
  * K8 parts Copyright 2002,2003 Andi Kleen, SuSE Labs.
  * Rest from unknown author(s).
  * 2004 Andi Kleen. Rewrote most of it.
  * Copyright 2008 Intel Corporation
  * Author: Andi Kleen
+ *
+ * This code handles both corrected (by hardware) errors and
+ * uncorrected errors. The corrected errors are only logged and
+ * handled by machine_check_poll() et.al. The entry point for
+ * uncorrected errors is do_machine_check() which handles the machine
+ * check exception (int 18) raised by the CPU. Uncorrected errors can
+ * either panic or in some special cases be recovered. The logging of
+ * machine check events is done through a special /dev/mcelog
+ * device. Then there is a lot of support code for setting up machine
+ * checks and configuring them.
+ *
+ * References:
+ * Intel 64 Software developer's manual (SDM)
+ * System Programming Guide Volume 3a
+ * Chapter 15 "Machine-check architecture"
+ * You should read that before changing anything.
  */
 #include <linux/thread_info.h>
 #include <linux/capability.h>
@@ -209,6 +226,11 @@ void mce_log(struct mce *mce)
 	set_bit(0, &mce_need_notify);
 }
 
+/*
+ * Panic handling. Print machine checks to the console in case of a
+ * unrecoverable error.
+ */
+
 static void print_mce(struct mce *m)
 {
 	pr_emerg(HW_ERR "CPU %d: Machine Check Exception: %Lx Bank %d: %016Lx\n",
@@ -322,7 +344,9 @@ static void mce_panic(char *msg, struct mce *final, char *exp)
 		pr_emerg(HW_ERR "Fake kernel panic: %s\n", msg);
 }
 
-/* Support code for software error injection */
+/*
+ * Support code for software error injection
+ */
 
 static int msr_to_offset(u32 msr)
 {
@@ -485,6 +509,11 @@ asmlinkage void smp_mce_self_interrupt(struct pt_regs *regs)
 }
 #endif
 
+/*
+ * Schedule further processing of a machine check event after
+ * the exception handler ran. Has to be careful about context because
+ * MCEs run lockless independent from any normal kernel locks.
+ */
 static void mce_report_event(struct pt_regs *regs)
 {
 	if (regs->flags & (X86_VM_MASK|X86_EFLAGS_IF)) {
@@ -529,6 +558,9 @@ DEFINE_PER_CPU(unsigned, mce_poll_count);
 /*
  * Poll for corrected events or events that happened before reset.
  * Those are just logged through /dev/mcelog.
+ *
+ * Either called regularly from a timer, or by special corrected
+ * error interrupts.
  *
  * This is executed in standard interrupt context.
  *
@@ -622,6 +654,10 @@ static int mce_no_way_out(struct mce *m, char **msg)
 	}
 	return 0;
 }
+
+/*
+ * Support for synchronizing machine checks over all CPUs.
+ */
 
 /*
  * Variable to establish order between CPUs while scanning.
@@ -1302,7 +1338,11 @@ static void __mcheck_cpu_init_generic(void)
 	}
 }
 
-/* Add per CPU specific workarounds here */
+/*
+ * This function contains workarounds for various machine check
+ * related CPU quirks. Primarly it disables broken machine check
+ * events.
+ */
 static int __cpuinit __mcheck_cpu_apply_quirks(struct cpuinfo_x86 *c)
 {
 	if (c->x86_vendor == X86_VENDOR_UNKNOWN) {
