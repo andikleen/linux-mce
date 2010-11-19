@@ -152,61 +152,31 @@ EXPORT_PER_CPU_SYMBOL_GPL(injectm);
  * separate MCEs from kernel messages to avoid bogus bug reports.
  */
 
-static struct mce_log mcelog = {
-	.signature	= MCE_LOG_SIGNATURE,
-	.len		= MCE_LOG_LEN,
-	.recordlen	= sizeof(struct mce),
-};
+#define MCE_LOG_BUFS 64
+
+static unsigned long mcelog_flags;
+typedef DECLARE_KFIFO(mcelog_fifo, struct mce, MCE_LOG_BUFS);
+static DEFINE_PER_CPU(mcelog_fifo, mcelog_kfifo);
 
 void mce_log(struct mce *mce)
 {
-	unsigned next, entry;
-
 	/* Emit the trace record: */
 	trace_mce_record(mce);
 
-	mce->finished = 0;
-	wmb();
-	for (;;) {
-		entry = rcu_dereference_check_mce(mcelog.next);
-		for (;;) {
-			/*
-			 * If edac_mce is enabled, it will check the error type
-			 * and will process it, if it is a known error.
-			 * Otherwise, the error will be sent through mcelog
-			 * interface
-			 */
-			if (edac_mce_parse(mce))
-				return;
-
-			/*
-			 * When the buffer fills up discard new entries.
-			 * Assume that the earlier errors are the more
-			 * interesting ones:
-			 */
-			if (entry >= MCE_LOG_LEN) {
-				set_bit(MCE_OVERFLOW,
-					(unsigned long *)&mcelog.flags);
-				return;
-			}
-			/* Old left over entry. Skip: */
-			if (mcelog.entry[entry].finished) {
-				entry++;
-				continue;
-			}
-			break;
-		}
-		smp_rmb();
-		next = entry + 1;
-		if (cmpxchg(&mcelog.next, entry, next) == entry)
-			break;
-	}
-	memcpy(mcelog.entry + entry, mce, sizeof(struct mce));
-	wmb();
-	mcelog.entry[entry].finished = 1;
-	wmb();
-
+	/*
+	 * If edac_mce is enabled, it will check the error type
+	 * and will process it, if it is a known error.
+	 * Otherwise, the error will be sent through mcelog
+	 * interface
+	 */
+	if (edac_mce_parse(mce))
+		return;
+	
 	mce->finished = 1;
+	if (kfifo_in(&__get_cpu_var(mcelog_kfifo), mce, 1) != 1) {
+		set_bit(MCE_OVERFLOW, &mcelog_flags);
+		return;
+	}
 	set_bit(0, &mce_need_notify);
 }
 
@@ -263,10 +233,55 @@ static void wait_for_panic(void)
 	panic("Panicing machine check CPU died");
 }
 
+/*
+ * Dump unlogged MCEs to console on panic.
+ *
+ * This is executed from MCE (= NMI) context.
+ * Other CPUs may be still writing, but noone else will remove
+ * from the FIFO in parallel in the normal case
+ * (if the system is really confused another CPU might still
+ * execute mce_read() and we failed to stop, but in this case it's still
+ * better to get as much data out as possible. And this should be
+ * very unlikely anyways.
+ */
+static void for_each_mce(void (*print)(struct mce *m, struct mce *final),
+		         struct mce *final)
+{
+	int cpu, len, n;
+	struct mce m;
+
+	for_each_possible_cpu(cpu) {
+		mcelog_fifo *kfifo = &per_cpu(mcelog_kfifo, cpu);
+
+		if (!kfifo_initialized(kfifo))
+			continue;
+		len = kfifo_len(kfifo);
+		for (n = 0; n < len; n++) {
+			if (kfifo_out_peek(kfifo, &m, 1, n) != 1)
+				break;
+			print(&m, final);
+		}
+	}
+}
+
+static void print_ce(struct mce *m, struct mce *final)
+{
+	if (!(m->status & MCI_STATUS_UC))
+		print_mce(m);
+	apei_write_mce(m);
+}
+
+static void print_uc(struct mce *m, struct mce *final)
+{
+	if (!(m->status & MCI_STATUS_UC))
+		return;
+	if (!final || memcmp(m, final, sizeof(struct mce)))
+		print_mce(m);
+	apei_write_mce(m);
+}
+
 static void mce_panic(char *msg, struct mce *final, char *exp)
 {
-	int i, apei_err = 0;
-
 	if (!fake_panic) {
 		/*
 		 * Make sure only one CPU runs in machine check panic
@@ -283,34 +298,11 @@ static void mce_panic(char *msg, struct mce *final, char *exp)
 			return;
 	}
 	/* First print corrected ones that are still unlogged */
-	for (i = 0; i < MCE_LOG_LEN; i++) {
-		struct mce *m = &mcelog.entry[i];
-		if (!(m->status & MCI_STATUS_VAL))
-			continue;
-		if (!(m->status & MCI_STATUS_UC)) {
-			print_mce(m);
-			if (!apei_err)
-				apei_err = apei_write_mce(m);
-		}
-	}
+	for_each_mce(print_ce, NULL);
 	/* Now print uncorrected but with the final one last */
-	for (i = 0; i < MCE_LOG_LEN; i++) {
-		struct mce *m = &mcelog.entry[i];
-		if (!(m->status & MCI_STATUS_VAL))
-			continue;
-		if (!(m->status & MCI_STATUS_UC))
-			continue;
-		if (!final || memcmp(m, final, sizeof(struct mce))) {
-			print_mce(m);
-			if (!apei_err)
-				apei_err = apei_write_mce(m);
-		}
-	}
-	if (final) {
+	for_each_mce(print_uc, final);
+	if (final)
 		print_mce(final);
-		if (!apei_err)
-			apei_err = apei_write_mce(final);
-	}
 	if (cpu_missing)
 		pr_emerg(HW_ERR "Some CPUs didn't answer in synchronization\n");
 	if (exp)
@@ -392,7 +384,7 @@ static DEFINE_PER_CPU(pfn_kfifo, mce_pfn_fifo);
 /* Runs with CPU affinity in workqueue */
 static int mce_ring_empty(void)
 {
-	return kfifo_len(&__get_cpu_var(mce_pfn_fifo)) == 0;
+	return kfifo_is_empty(&__get_cpu_var(mce_pfn_fifo));
 }
 
 static int mce_ring_get(unsigned long *pfn)
@@ -1424,6 +1416,7 @@ void __cpuinit mcheck_cpu_init(struct cpuinfo_x86 *c)
 	}
 
 	INIT_KFIFO(__get_cpu_var(mce_pfn_fifo));
+	INIT_KFIFO(__get_cpu_var(mcelog_kfifo));
 	machine_check_vector = do_machine_check;
 
 	__mcheck_cpu_init_generic();
@@ -1472,13 +1465,6 @@ static int mce_release(struct inode *inode, struct file *file)
 	return 0;
 }
 
-static void collect_tscs(void *data)
-{
-	unsigned long *cpu_tsc = (unsigned long *)data;
-
-	rdtscll(cpu_tsc[smp_processor_id()]);
-}
-
 static int mce_apei_read_done;
 
 /* Collect MCE record of previous boot in persistent storage via APEI ERST. */
@@ -1520,13 +1506,8 @@ static ssize_t mce_read(struct file *filp, char __user *ubuf, size_t usize,
 			loff_t *off)
 {
 	char __user *buf = ubuf;
-	unsigned long *cpu_tsc;
-	unsigned prev, next;
-	int i, err;
-
-	cpu_tsc = kmalloc(nr_cpu_ids * sizeof(long), GFP_KERNEL);
-	if (!cpu_tsc)
-		return -ENOMEM;
+	int cpu, err;
+	unsigned copied;
 
 	mutex_lock(&mce_read_mutex);
 
@@ -1536,66 +1517,20 @@ static ssize_t mce_read(struct file *filp, char __user *ubuf, size_t usize,
 			goto out;
 	}
 
-	next = rcu_dereference_check_mce(mcelog.next);
+	for_each_possible_cpu (cpu) {
+		mcelog_fifo *kfifo = &per_cpu(mcelog_kfifo, cpu);
 
-	/* Only supports full reads right now */
-	err = -EINVAL;
-	if (*off != 0 || usize < MCE_LOG_LEN*sizeof(struct mce))
-		goto out;
-
-	err = 0;
-	prev = 0;
-	do {
-		for (i = prev; i < next; i++) {
-			unsigned long start = jiffies;
-
-			while (!mcelog.entry[i].finished) {
-				if (time_after_eq(jiffies, start + 2)) {
-					memset(mcelog.entry + i, 0,
-					       sizeof(struct mce));
-					goto timeout;
-				}
-				cpu_relax();
-			}
-			smp_rmb();
-			err |= copy_to_user(buf, mcelog.entry + i,
-					    sizeof(struct mce));
-			buf += sizeof(struct mce);
-timeout:
-			;
-		}
-
-		memset(mcelog.entry + prev, 0,
-		       (next - prev) * sizeof(struct mce));
-		prev = next;
-		next = cmpxchg(&mcelog.next, prev, 0);
-	} while (next != prev);
-
-	synchronize_sched();
-
-	/*
-	 * Collect entries that were still getting written before the
-	 * synchronize.
-	 */
-	on_each_cpu(collect_tscs, cpu_tsc, 1);
-
-	for (i = next; i < MCE_LOG_LEN; i++) {
-		if (mcelog.entry[i].finished &&
-		    mcelog.entry[i].tsc < cpu_tsc[mcelog.entry[i].cpu]) {
-			err |= copy_to_user(buf, mcelog.entry+i,
-					    sizeof(struct mce));
-			smp_rmb();
-			buf += sizeof(struct mce);
-			memset(&mcelog.entry[i], 0, sizeof(struct mce));
-		}
+		if (!kfifo_initialized(kfifo))
+			continue;
+		if (buf >= ubuf + usize)
+			break;
+		err = kfifo_to_user(kfifo, buf, ubuf + usize - buf, &copied); 
+		if (err)
+			break;
+		buf += copied;
 	}
-
-	if (err)
-		err = -EFAULT;
-
 out:
 	mutex_unlock(&mce_read_mutex);
-	kfree(cpu_tsc);
 
 	return err ? err : buf - ubuf;
 }
@@ -1603,7 +1538,7 @@ out:
 static unsigned int mce_poll(struct file *file, poll_table *wait)
 {
 	poll_wait(file, &mce_wait, wait);
-	if (rcu_dereference_check_mce(mcelog.next))
+	if (!kfifo_is_empty(&mcelog_kfifo))
 		return POLLIN | POLLRDNORM;
 	if (!mce_apei_read_done && apei_check_mce())
 		return POLLIN | POLLRDNORM;
@@ -1626,8 +1561,8 @@ static long mce_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 		unsigned flags;
 
 		do {
-			flags = mcelog.flags;
-		} while (cmpxchg(&mcelog.flags, flags, 0) != flags);
+			flags = mcelog_flags;
+		} while (cmpxchg(&mcelog_flags, flags, 0) != flags);
 
 		return put_user(flags, p);
 	}
