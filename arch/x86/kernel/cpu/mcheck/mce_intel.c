@@ -65,6 +65,18 @@ static void intel_threshold_interrupt(void)
 	mce_notify_irq();
 }
 
+/*
+ * Mask CMCI when this CPU owns no banks to avoid unnecessary interrupts.
+ */
+static void cmci_mask(void)
+{
+	u32 val = THRESHOLD_APIC_VECTOR|APIC_DM_FIXED;
+
+	if (bitmap_empty(__get_cpu_var(mce_banks_owned), MAX_NR_BANKS))
+		val |= APIC_LVT_MASKED;
+	apic_write(APIC_LVTCMCI, val);
+}
+
 static void print_update(char *type, int *hdr, int num)
 {
 	if (*hdr == 0)
@@ -84,6 +96,7 @@ static void cmci_discover(int banks, int boot)
 	unsigned long flags;
 	int hdr = 0;
 	int i;
+	int changed = 0;
 
 	spin_lock_irqsave(&cmci_discover_lock, flags);
 	for (i = 0; i < banks; i++) {
@@ -96,8 +109,10 @@ static void cmci_discover(int banks, int boot)
 
 		/* Already owned by someone else? */
 		if (val & MCI_CTL2_CMCI_EN) {
-			if (test_and_clear_bit(i, owned) && !boot)
+			if (test_and_clear_bit(i, owned) && !boot) {
 				print_update("SHD", &hdr, i);
+				changed = 1;
+			}
 			__clear_bit(i, __get_cpu_var(mce_poll_banks));
 			continue;
 		}
@@ -116,6 +131,8 @@ static void cmci_discover(int banks, int boot)
 			WARN_ON(!test_bit(i, __get_cpu_var(mce_poll_banks)));
 		}
 	}
+	if (changed)
+		cmci_mask();
 	spin_unlock_irqrestore(&cmci_discover_lock, flags);
 	if (hdr)
 		printk(KERN_CONT "\n");
@@ -147,6 +164,7 @@ void cmci_clear(void)
 	int i;
 	int banks;
 	u64 val;
+	int changed = 0;
 
 	if (!cmci_supported(&banks))
 		return;
@@ -159,7 +177,10 @@ void cmci_clear(void)
 		val &= ~(MCI_CTL2_CMCI_EN|MCI_CTL2_CMCI_THRESHOLD_MASK);
 		wrmsrl(MSR_IA32_MCx_CTL2(i), val);
 		__clear_bit(i, __get_cpu_var(mce_banks_owned));
+		changed = 1;
 	}
+	if (changed)
+		cmci_mask();
 	spin_unlock_irqrestore(&cmci_discover_lock, flags);
 }
 
