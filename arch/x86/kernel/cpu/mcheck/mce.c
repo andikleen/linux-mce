@@ -2189,13 +2189,26 @@ static int fake_panic_set(void *data, u64 val)
 	fake_panic = val;
 	return 0;
 }
+static int mca_recovery_get(void *data, u64 *val)
+{
+	*val = mce_ser;
+	return 0;
+}
+
+static int mca_recovery_set(void *data, u64 val)
+{
+	mce_ser = val;
+	return 0;
+}
 
 DEFINE_SIMPLE_ATTRIBUTE(fake_panic_fops, fake_panic_get,
 			fake_panic_set, "%llu\n");
+DEFINE_SIMPLE_ATTRIBUTE(mca_recovery_fops, mca_recovery_get,
+			mca_recovery_set, "%llu\n");
 
 static int __init mcheck_debugfs_init(void)
 {
-	struct dentry *dmce, *ffake_panic;
+	struct dentry *dmce, *ffake_panic, *fmca_recovery;
 
 	dmce = mce_get_debugfs_dir();
 	if (!dmce)
@@ -2204,7 +2217,10 @@ static int __init mcheck_debugfs_init(void)
 					  &fake_panic_fops);
 	if (!ffake_panic)
 		return -ENOMEM;
-
+	fmca_recovery = debugfs_create_file("mca_recovery_force",0644,dmce,NULL,
+					&mca_recovery_fops);
+	if (!fmca_recovery)
+		return -ENOMEM;
 	return 0;
 }
 late_initcall(mcheck_debugfs_init);
