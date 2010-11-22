@@ -73,8 +73,11 @@ static void cmci_mask(void)
 {
 	u32 val = THRESHOLD_APIC_VECTOR|APIC_DM_FIXED;
 
-	if (bitmap_empty(__get_cpu_var(mce_banks_owned), MAX_NR_BANKS))
+	if (bitmap_empty(__get_cpu_var(mce_banks_owned), MAX_NR_BANKS)) {
+		printk(KERN_DEBUG "MCE: Masking CMCI on CPU %d\n",
+		       smp_processor_id());
 		val |= APIC_LVT_MASKED;
+	}
 	apic_write(APIC_LVTCMCI, val);
 }
 
