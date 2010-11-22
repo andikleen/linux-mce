@@ -1159,6 +1159,7 @@ static void mce_start_timer(unsigned long data)
 	struct timer_list *t;
 	int *n;
 	int i;
+	int old;
 
 	if (mce_available(&current_cpu_data)) {
 		machine_check_poll(MCP_TIMESTAMP,
@@ -1172,10 +1173,13 @@ static void mce_start_timer(unsigned long data)
  	 * Only round timers when there are no errors.
 	 */
 	n = &__get_cpu_var(mce_next_interval);
+	old = *n;
 	if (mce_notify_irq())
 		*n = max_t(int, *n/2, msecs_to_jiffies(check_min_interval));
 	else if ((*n *= 2) >= check_interval * HZ)
 		*n = round_jiffies_relative(check_interval * HZ);
+	if (*n != old)
+		trace_printk("MCE timer frequency changed %d -> %d\n", old, *n);
 
 	/*
 	 * Cycle timer through the available thread siblings.
@@ -1189,6 +1193,10 @@ static void mce_start_timer(unsigned long data)
 
 	t->expires = jiffies + *n;
 	add_timer_on(t, i);
+
+	if (i != smp_processor_id())
+		trace_printk("MCE timer cpu %d moved to %d\n", 
+				smp_processor_id(), i);
 }
 
 static void mce_do_trigger(struct work_struct *work)
@@ -1429,6 +1437,8 @@ static void __mcheck_cpu_init_timer(void)
   	for_each_cpu (i, topology_thread_cpumask(cpu))
   		del_timer_sync(&per_cpu(mce_timer, i));
   	del_timer_sync(&per_cpu(mce_timer, cpu));
+
+	printk(KERN_INFO "MCE: CPU %d: started MCA poll timer\n", cpu);
 
 	*n = check_interval * HZ;
 	if (!*n)
