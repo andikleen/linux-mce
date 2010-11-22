@@ -2082,12 +2082,17 @@ static void __cpuinit mce_disable_cpu(void *h)
 
 	if (!(action & CPU_TASKS_FROZEN))
 		cmci_clear();
+ 	printk(KERN_INFO "MCE: CPU %d: Disabling banks",
+	       smp_processor_id());
 	for (i = 0; i < banks; i++) {
 		struct mce_bank *b = &mce_banks[i];
 
-		if (b->init && bank_clear(i))
+		if (b->init && bank_clear(i)) {
+ 			printk(" %d", i);
 			wrmsrl(MSR_IA32_MCx_CTL(i), 0);
+		}
 	}
+	printk("\n");
 }
 
 static void __cpuinit mce_reenable_cpu(void *h)
