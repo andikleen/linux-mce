@@ -20,8 +20,16 @@
  * the CPU to raise an interrupt when a corrected machine check happened.
  * Normally we pick those up using a regular polling timer.
  * Also supports reliable discovery of shared banks.
+ *
+ * For reference see the Intel 64 Software Developer's Manual, Volume 3a,
+ * 15.5.2. This code is a relatively faithful implementation of the
+ * recommendations there.
  */
 
+/*
+ * Ownership of MCE banks per CPU. To avoid duplicated events
+ * for shared banks we assign ownership to specific CPUs.
+ */
 static DEFINE_PER_CPU(mce_banks_t, mce_banks_owned);
 
 /*
@@ -30,6 +38,10 @@ static DEFINE_PER_CPU(mce_banks_t, mce_banks_owned);
  */
 static DEFINE_SPINLOCK(cmci_discover_lock);
 
+/*
+ * CMCI threshold in hardware has some drawbacks. We chose to log every event
+ * and hardcode 1
+ */
 #define CMCI_THRESHOLD 1
 
 static int cmci_supported(int *banks)
@@ -165,7 +177,7 @@ void cmci_clear(void)
 
 /*
  * After a CPU went down cycle through all the others and rediscover
- * Must run in process context.
+ * bank ownership.  Must run in process context.
  */
 void cmci_rediscover(int dying)
 {
