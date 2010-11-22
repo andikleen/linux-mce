@@ -1201,16 +1201,17 @@ void mce_log_therm_throt_event(__u64 status)
  * errors, poll 2x slower (up to check_interval seconds).
  */
 static int check_interval = 5 * 60; /* 5 minutes */
+static int check_min_interval = 10;  /* in ms */
 
 static DEFINE_PER_CPU(int, mce_next_interval); /* in jiffies */
 static DEFINE_PER_CPU(struct timer_list, mce_timer);
 
 static void mce_start_timer(unsigned long data)
 {
-	struct timer_list *t = &per_cpu(mce_timer, data);
+	int cpu = smp_processor_id();
+	struct timer_list *t;
 	int *n;
-
-	WARN_ON(smp_processor_id() != data);
+	int i;
 
 	if (mce_available(&current_cpu_data)) {
 		machine_check_poll(MCP_TIMESTAMP,
@@ -1220,15 +1221,27 @@ static void mce_start_timer(unsigned long data)
 	/*
 	 * Alert userspace if needed.  If we logged an MCE, reduce the
 	 * polling interval, otherwise increase the polling interval.
+ 	 *
+ 	 * Only round timers when there are no errors.
 	 */
 	n = &__get_cpu_var(mce_next_interval);
 	if (mce_notify_irq())
-		*n = max(*n/2, HZ/100);
-	else
-		*n = min(*n*2, (int)round_jiffies_relative(check_interval*HZ));
+		*n = max_t(int, *n/2, msecs_to_jiffies(check_min_interval));
+	else if ((*n *= 2) >= check_interval * HZ)
+		*n = round_jiffies_relative(check_interval * HZ);
+
+	/*
+	 * Cycle timer through the available thread siblings.
+	 * This way we use the CPU time evenly in the no error case.
+	 */
+	i = cpumask_next(cpu, topology_thread_cpumask(cpu));
+	if (i >= nr_cpu_ids)
+		i = cpumask_first(topology_thread_cpumask(cpu));
+	t = &per_cpu(mce_timer, i);
+	per_cpu(mce_next_interval, i) = *n;
 
 	t->expires = jiffies + *n;
-	add_timer_on(t, smp_processor_id());
+	add_timer_on(t, i);
 }
 
 static void mce_do_trigger(struct work_struct *work)
@@ -1460,11 +1473,19 @@ static void __mcheck_cpu_init_timer(void)
 {
 	struct timer_list *t = &__get_cpu_var(mce_timer);
 	int *n = &__get_cpu_var(mce_next_interval);
+  	int cpu = smp_processor_id();
+  	int i;
 
-	setup_timer(t, mce_start_timer, smp_processor_id());
+	setup_timer(t, mce_start_timer, 0);
 
 	if (mce_ignore_ce)
 		return;
+
+  	if (cpumask_first(topology_thread_cpumask(cpu)) < cpu)
+  		return;
+  	for_each_cpu (i, topology_thread_cpumask(cpu))
+  		del_timer_sync(&per_cpu(mce_timer, i));
+  	del_timer_sync(&per_cpu(mce_timer, cpu));
 
 	*n = check_interval * HZ;
 	if (!*n)
@@ -1836,14 +1857,15 @@ static void mce_cpu_restart(void *data)
 	del_timer_sync(&__get_cpu_var(mce_timer));
 	if (!mce_available(&current_cpu_data))
 		return;
-	__mcheck_cpu_init_generic();
+	if (data)
+		__mcheck_cpu_init_generic();
 	__mcheck_cpu_init_timer();
 }
 
 /* Reinit MCEs after user configuration changes */
 static void mce_restart(void)
 {
-	on_each_cpu(mce_cpu_restart, NULL, 1);
+	on_each_cpu(mce_cpu_restart, (void *)1L, 1);
 }
 
 /* Toggle features for corrected errors */
@@ -1992,6 +2014,12 @@ static struct sysdev_ext_attribute attr_check_interval = {
 	&check_interval
 };
 
+static struct sysdev_ext_attribute attr_check_min_interval = {
+	_SYSDEV_ATTR(check_min_interval, 0644, sysdev_show_int,
+		     store_int_with_restart),
+	&check_min_interval
+};
+
 static struct sysdev_ext_attribute attr_ignore_ce = {
 	_SYSDEV_ATTR(ignore_ce, 0644, sysdev_show_int, set_ignore_ce),
 	&mce_ignore_ce
@@ -2010,6 +2038,7 @@ static struct sysdev_attribute *mce_attrs[] = {
 	&attr_dont_log_ce.attr,
 	&attr_ignore_ce.attr,
 	&attr_cmci_disabled.attr,
+	&attr_check_min_interval.attr,
 	NULL
 };
 
@@ -2075,7 +2104,33 @@ static __cpuinit void mce_remove_device(unsigned int cpu)
 	cpumask_clear_cpu(cpu, mce_dev_initialized);
 }
 
-/* Make sure there are no machine checks on offlined CPUs. */
+/*
+ * Decide if a bank should be disabled on offlining or not.
+ * Offlining is slightly tricky due to shared banks. When one sibling
+ * is offlined we should still keep them enabled for any
+ * sharer that is still online.
+ * There's no standard way to detect this, so use a couple
+ * of heuristics.
+ */
+static int bank_clear(int bank)
+{
+	int cpu = smp_processor_id();
+
+	/* Thread sibling alive? */
+	if (!cpumask_equal(topology_thread_cpumask(cpu), cpumask_of(cpu)))
+		return 0;
+
+	/* Socket sibling alive and this is a socket shared bank? */
+	if (mce_banks[bank].socket_shared &&
+		!cpumask_equal(topology_core_cpumask(cpu), cpumask_of(cpu)))
+		return 0;
+
+	return 1;
+}
+
+/*
+ * Make sure there are no machine checks on offlined CPUs.
+ */
 static void __cpuinit mce_disable_cpu(void *h)
 {
 	unsigned long action = *(unsigned long *)h;
@@ -2089,7 +2144,7 @@ static void __cpuinit mce_disable_cpu(void *h)
 	for (i = 0; i < banks; i++) {
 		struct mce_bank *b = &mce_banks[i];
 
-		if (b->init)
+		if (b->init && bank_clear(i))
 			wrmsrl(MSR_IA32_MCx_CTL(i), 0);
 	}
 }
@@ -2128,6 +2183,10 @@ mce_cpu_callback(struct notifier_block *nfb, unsigned long action, void *hcpu)
 		break;
 	case CPU_DEAD:
 	case CPU_DEAD_FROZEN:
+		/* Restart poll timer on other siblings */
+		smp_call_function_many(topology_thread_cpumask(cpu),
+					(void (*)(void *))mce_cpu_restart,
+					NULL, 1);
 		if (threshold_cpu_callback)
 			threshold_cpu_callback(action, cpu);
 		mce_remove_device(cpu);

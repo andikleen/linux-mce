@@ -17,6 +17,7 @@ enum severity_level {
 struct mce_bank {
 	u64			ctl;			/* subevents to enable */
 	unsigned char init;				/* initialise bank? */
+	unsigned char socket_shared;			/* bank socket shared */
 	struct sysdev_attribute attr;			/* sysdev attribute */
 	char			attrname[ATTR_LEN];	/* attribute name */
 };

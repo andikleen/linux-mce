@@ -14,6 +14,7 @@
 #include <asm/processor.h>
 #include <asm/msr.h>
 #include <asm/mce.h>
+#include "mce-internal.h"
 
 /*
  * Support for Intel Correct Machine Check Interrupts. This allows
@@ -77,12 +78,49 @@ static void intel_threshold_interrupt(void)
 	mce_notify_irq();
 }
 
+/*
+ * Mask CMCI when this CPU owns no banks to avoid unnecessary interrupts.
+ */
+static void cmci_mask(void)
+{
+	u32 val = THRESHOLD_APIC_VECTOR|APIC_DM_FIXED;
+
+	if (bitmap_empty(__get_cpu_var(mce_banks_owned), MAX_NR_BANKS))
+		val |= APIC_LVT_MASKED;
+	apic_write(APIC_LVTCMCI, val);
+}
+
 static void print_update(char *type, int *hdr, int num)
 {
 	if (*hdr == 0)
 		printk(KERN_INFO "CPU %d MCA banks", smp_processor_id());
 	*hdr = 1;
 	printk(KERN_CONT " %s:%d", type, num);
+}
+
+/*
+ * Simple heuristic to discover socket shared banks.
+ * This heuristic only works for CMCI banks.
+ */
+static int check_socket_shared(int i)
+{
+	int cpu = smp_processor_id();
+
+	/*
+	 * First sibling to come alive?
+ 	 * Relies on MCE init running before sibling mask setup.
+	 */
+	if (!cpumask_empty(topology_thread_cpumask(cpu)))
+		return 0;
+
+	/*
+ 	 * The bank was already owned, but we're the first sibling
+ 	 * on the current core.
+	 * This means it's very likely socket shared. Mark it as such.
+	 */
+	mce_banks[i].socket_shared = 1;
+
+	return 1;
 }
 
 /*
@@ -96,6 +134,7 @@ static void cmci_discover(int banks, int boot)
 	unsigned long flags;
 	int hdr = 0;
 	int i;
+	int changed = 0;
 
 	spin_lock_irqsave(&cmci_discover_lock, flags);
 	for (i = 0; i < banks; i++) {
@@ -106,10 +145,21 @@ static void cmci_discover(int banks, int boot)
 
 		rdmsrl(MSR_IA32_MCx_CTL2(i), val);
 
-		/* Already owned by someone else? */
-		if (val & MCI_CTL2_CMCI_EN) {
-			if (test_and_clear_bit(i, owned) && !boot)
-				print_update("SHD", &hdr, i);
+ 		/*
+ 		 * Already owned by someone else?
+ 		 *
+ 		 * When this is the first CPU in a socket to come online always
+		 * take ownership.
+ 		 */
+		if ((val & MCI_CTL2_CMCI_EN) &&
+		    cpumask_weight(cpu_core_mask(smp_processor_id())) > 1) {
+			if (test_and_clear_bit(i, owned) && !boot) {
+				char *msg = "SHD";
+				if (check_socket_shared(i))
+					msg = "SOCK-SHD";
+				print_update(msg, &hdr, i);
+				changed = 1;
+			}
 			__clear_bit(i, __get_cpu_var(mce_poll_banks));
 			continue;
 		}
@@ -128,6 +178,8 @@ static void cmci_discover(int banks, int boot)
 			WARN_ON(!test_bit(i, __get_cpu_var(mce_poll_banks)));
 		}
 	}
+	if (changed)
+		cmci_mask();
 	spin_unlock_irqrestore(&cmci_discover_lock, flags);
 	if (hdr)
 		printk(KERN_CONT "\n");
@@ -159,6 +211,7 @@ void cmci_clear(void)
 	int i;
 	int banks;
 	u64 val;
+	int changed = 0;
 
 	if (!cmci_supported(&banks))
 		return;
@@ -171,7 +224,10 @@ void cmci_clear(void)
 		val &= ~(MCI_CTL2_CMCI_EN|MCI_CTL2_CMCI_THRESHOLD_MASK);
 		wrmsrl(MSR_IA32_MCx_CTL2(i), val);
 		__clear_bit(i, __get_cpu_var(mce_banks_owned));
+		changed = 1;
 	}
+	if (changed)
+		cmci_mask();
 	spin_unlock_irqrestore(&cmci_discover_lock, flags);
 }
 
