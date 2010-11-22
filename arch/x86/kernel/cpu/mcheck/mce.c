@@ -403,6 +403,18 @@ static void mce_wrmsrl(u32 msr, u64 v)
 	wrmsrl(msr, v);
 }
 
+/* 
+ * Switch back to processing hardware events after finishing 
+ * an injected event.
+ */
+static void mce_end_injection(unsigned long *b)
+{
+	struct mce *m = &__get_cpu_var(injectm);
+
+	if (m->finished && test_bit(m->bank, b))
+		m->finished = 0;
+}
+
 /*
  * Simple lockless ring to communicate PFNs from the exception handler with the
  * process context work function. This is vastly simplified because there's
@@ -637,6 +649,8 @@ void machine_check_poll(enum mcp_flags flags, mce_banks_t *b)
 		 */
 		mce_wrmsrl(MSR_IA32_MCx_STATUS(i), 0);
 	}
+
+	mce_end_injection(*b);
 
 	/*
 	 * Don't clear MCG_STATUS here because it's only defined for
@@ -1125,6 +1139,7 @@ void do_machine_check(struct pt_regs *regs, long error_code)
 	if (worst > 0)
 		mce_report_event(regs);
 	mce_wrmsrl(MSR_IA32_MCG_STATUS, 0);
+	mce_end_injection(toclear);
 out:
 	atomic_dec(&mce_entry);
 	sync_core();
@@ -2323,13 +2338,26 @@ static int fake_panic_set(void *data, u64 val)
 	fake_panic = val;
 	return 0;
 }
+static int mca_recovery_get(void *data, u64 *val)
+{
+	*val = mce_ser;
+	return 0;
+}
+
+static int mca_recovery_set(void *data, u64 val)
+{
+	mce_ser = val;
+	return 0;
+}
 
 DEFINE_SIMPLE_ATTRIBUTE(fake_panic_fops, fake_panic_get,
 			fake_panic_set, "%llu\n");
+DEFINE_SIMPLE_ATTRIBUTE(mca_recovery_fops, mca_recovery_get,
+			mca_recovery_set, "%llu\n");
 
 static int __init mcheck_debugfs_init(void)
 {
-	struct dentry *dmce, *ffake_panic;
+	struct dentry *dmce, *ffake_panic, *fmca_recovery;
 
 	dmce = mce_get_debugfs_dir();
 	if (!dmce)
@@ -2338,7 +2366,10 @@ static int __init mcheck_debugfs_init(void)
 					  &fake_panic_fops);
 	if (!ffake_panic)
 		return -ENOMEM;
-
+	fmca_recovery = debugfs_create_file("mca_recovery_force",0644,dmce,NULL,
+					&mca_recovery_fops);
+	if (!fmca_recovery)
+		return -ENOMEM;
 	return 0;
 }
 late_initcall(mcheck_debugfs_init);
