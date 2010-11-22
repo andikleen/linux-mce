@@ -56,12 +56,35 @@ EXPORT_SYMBOL(panic_blink);
  *
  *	This function never returns.
  */
-NORET_TYPE void panic(const char * fmt, ...)
+NORET_TYPE void panic(const char *fmt, ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	vpanic(0, 0, fmt, ap);
+}
+EXPORT_SYMBOL(panic);
+
+NORET_TYPE void xpanic(enum panic_flags flags, int timeout,
+                       const char *fmt, ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	xpanic(flags, timeout, fmt, ap);
+}
+EXPORT_SYMBOL(xpanic);
+
+NORET_TYPE void vpanic(enum panic_flags flags, int timeout,
+		       const char * fmt, va_list args)
 {
 	static char buf[1024];
-	va_list args;
 	long i, i_next = 0;
 	int state = 0;
+
+	/*
+	 * Let user always override panic_timeout.
+	 */
+	if (panic_timeout > 0)
+		timeout = panic_timeout;
 
 	/*
 	 * It's possible to come here directly from a panic-assertion and
@@ -72,12 +95,11 @@ NORET_TYPE void panic(const char * fmt, ...)
 
 	console_verbose();
 	bust_spinlocks(1);
-	va_start(args, fmt);
 	vsnprintf(buf, sizeof(buf), fmt, args);
-	va_end(args);
 	printk(KERN_EMERG "Kernel panic - not syncing: %s\n",buf);
 #ifdef CONFIG_DEBUG_BUGVERBOSE
-	dump_stack();
+	if (!(flags & PANIC_NO_BACKTRACE))
+		dump_stack();
 #endif
 
 	/*
@@ -85,7 +107,8 @@ NORET_TYPE void panic(const char * fmt, ...)
 	 * everything else.
 	 * Do we want to call this before we try to display a message?
 	 */
-	crash_kexec(NULL);
+	if (!(flags & PANIC_NO_KEXEC))
+		crash_kexec(NULL);
 
 	kmsg_dump(KMSG_DUMP_PANIC);
 
@@ -103,7 +126,7 @@ NORET_TYPE void panic(const char * fmt, ...)
 	if (!panic_blink)
 		panic_blink = no_blink;
 
-	if (panic_timeout > 0) {
+	if (timeout > 0) {
 		/*
 		 * Delay timeout seconds before rebooting the machine.
 		 * We can't use the "normal" timers since we just panicked.
@@ -151,9 +174,7 @@ NORET_TYPE void panic(const char * fmt, ...)
 		mdelay(PANIC_TIMER_STEP);
 	}
 }
-
-EXPORT_SYMBOL(panic);
-
+EXPORT_SYMBOL(vpanic);
 
 struct tnt {
 	u8	bit;

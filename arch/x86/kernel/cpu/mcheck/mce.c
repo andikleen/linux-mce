@@ -250,9 +250,8 @@ static void wait_for_panic(void)
 	local_irq_enable();
 	while (timeout-- > 0)
 		udelay(1);
-	if (panic_timeout == 0)
-		panic_timeout = mce_panic_timeout;
-	panic("Panicing machine check CPU died");
+	xpanic(PANIC_NO_KEXEC|PANIC_NO_BACKTRACE, 0,
+		"Panicing machine check CPU died");
 }
 
 /*
@@ -330,9 +329,8 @@ static void mce_panic(char *msg, struct mce *final, char *exp)
 	if (exp)
 		pr_emerg(HW_ERR "Machine check: %s\n", exp);
 	if (!fake_panic) {
-		if (panic_timeout == 0)
-			panic_timeout = mce_panic_timeout;
-		panic(msg);
+		xpanic(PANIC_NO_KEXEC|PANIC_NO_BACKTRACE, mce_panic_timeout, 
+			msg);
 	} else
 		pr_emerg(HW_ERR "Fake kernel panic: %s\n", msg);
 }
