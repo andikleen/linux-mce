@@ -379,6 +379,18 @@ static void mce_wrmsrl(u32 msr, u64 v)
 	wrmsrl(msr, v);
 }
 
+/* 
+ * Switch back to processing hardware events after finishing 
+ * an injected event.
+ */
+static void mce_end_injection(unsigned long *b)
+{
+	struct mce *m = &__get_cpu_var(injectm);
+
+	if (m->finished && test_bit(m->bank, b))
+		m->finished = 0;
+}
+
 /*
  * Simple lockless ring to communicate PFNs from the exception handler with the
  * process context work function. This is vastly simplified because there's
@@ -597,6 +609,8 @@ void machine_check_poll(enum mcp_flags flags, mce_banks_t *b)
 		 */
 		mce_wrmsrl(MSR_IA32_MCx_STATUS(i), 0);
 	}
+
+	mce_end_injection(*b);
 
 	/*
 	 * Don't clear MCG_STATUS here because it's only defined for
@@ -1081,6 +1095,7 @@ void do_machine_check(struct pt_regs *regs, long error_code)
 	if (worst > 0)
 		mce_report_event(regs);
 	mce_wrmsrl(MSR_IA32_MCG_STATUS, 0);
+	mce_end_injection(toclear);
 out:
 	atomic_dec(&mce_entry);
 	sync_core();
