@@ -1816,10 +1816,12 @@ int __init mcheck_init(void)
  * Disable machine checks on suspend and shutdown. We can't really handle
  * them later.
  */
-static int mce_disable_error_reporting(void)
+int mce_disable_error_reporting(void)
 {
 	int i;
 
+	if (!mce_available(&current_cpu_data))
+ 		return 0;
 	for (i = 0; i < banks; i++) {
 		struct mce_bank *b = &mce_banks[i];
 
@@ -1827,6 +1829,20 @@ static int mce_disable_error_reporting(void)
 			wrmsrl(MSR_IA32_MCx_CTL(i), 0);
 	}
 	return 0;
+}
+
+void mce_reenable_error_reporting(void)
+{
+ 	int i;
+
+ 	if (!mce_available(&current_cpu_data))
+ 		return;
+ 	for (i = 0; i < banks; i++) {
+ 		struct mce_bank *b = &mce_banks[i];
+
+ 		if (b->init)
+ 			wrmsrl(MSR_IA32_MCx_CTL(i), b->ctl);
+ 	}
 }
 
 static int mce_suspend(struct sys_device *dev, pm_message_t state)

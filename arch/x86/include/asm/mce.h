@@ -230,6 +230,17 @@ static inline void mcheck_intel_therm_init(void) { }
 #endif
 
 /*
+ * Enable/disable MCE signalling for special situations.
+ */
+#ifdef CONFIG_X86_MCE
+int mce_disable_error_reporting(void);
+void mce_reenable_error_reporting(void);
+#else
+static int mce_disable_error_reporting(void) { return 0; }
+static void mce_reenable_error_reporting(void) { }
+#endif
+
+/*
  * Used by APEI to report memory error via /dev/mcelog
  */
 
