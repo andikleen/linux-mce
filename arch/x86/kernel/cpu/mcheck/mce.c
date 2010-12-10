@@ -953,9 +953,18 @@ void do_machine_check(struct pt_regs *regs, long error_code)
 	DECLARE_BITMAP(toclear, MAX_NR_BANKS);
 	char *msg = "Unknown";
 
-	atomic_inc(&mce_entry);
-
 	percpu_inc(mce_exception_count);
+
+	/* 
+	 * Ignore machine checks on offlined CPUs.
+	 */
+	if (!cpu_online(raw_smp_processor_id())) {
+		mce_wrmsrl(MSR_IA32_MCG_STATUS, 0);
+		sync_core();
+		return;
+	}
+
+	atomic_inc(&mce_entry);
 
 	if (notify_die(DIE_NMI, "machine check", regs, error_code,
 			   18, SIGKILL) == NOTIFY_STOP)
