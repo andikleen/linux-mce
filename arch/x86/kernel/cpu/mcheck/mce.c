@@ -122,11 +122,15 @@ static int			cpu_missing;
 ATOMIC_NOTIFIER_HEAD(x86_mce_decoder_chain);
 EXPORT_SYMBOL_GPL(x86_mce_decoder_chain);
 
+#define CORRECTED 1
+
 static int default_decode_mce(struct notifier_block *nb, unsigned long val,
 			       void *data)
 {
-	pr_emerg(HW_ERR "No human readable MCE decoding support on this CPU type.\n");
-	pr_emerg(HW_ERR "Run the message through 'mcelog --ascii' to decode.\n");
+	if (val != CORRECTED) { 
+		pr_emerg(HW_ERR "No human readable MCE decoding support on this CPU type.\n");
+		pr_emerg(HW_ERR "Run the message through 'mcelog --ascii' to decode.\n");
+	}
 
 	return NOTIFY_STOP;
 }
@@ -625,7 +629,8 @@ void machine_check_poll(enum mcp_flags flags, mce_banks_t *b)
 		 */
 		if (!(flags & MCP_DONTLOG) && !mce_dont_log_ce) {
 			mce_log(&m);
-			atomic_notifier_call_chain(&x86_mce_decoder_chain, 0, &m);
+			atomic_notifier_call_chain(&x86_mce_decoder_chain, 
+						   CORRECTED, &m);
 			add_taint(TAINT_MACHINE_CHECK);
 		}
 
@@ -1108,9 +1113,18 @@ void do_machine_check(struct pt_regs *regs, long error_code)
 	DECLARE_BITMAP(toclear, MAX_NR_BANKS);
 	char *msg = "Unknown";
 
-	atomic_inc(&mce_entry);
-
 	percpu_inc(mce_exception_count);
+
+	/* 
+	 * Ignore machine checks on offlined CPUs.
+	 */
+	if (!cpu_online(raw_smp_processor_id())) {
+		mce_wrmsrl(MSR_IA32_MCG_STATUS, 0);
+		sync_core();
+		return;
+	}
+
+	atomic_inc(&mce_entry);
 
 	if (notify_die(DIE_NMI, "machine check", regs, error_code,
 			   18, SIGKILL) == NOTIFY_STOP)
